@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import sys
 import argparse
 import rclpy
 from rclpy.node import Node
@@ -14,20 +15,28 @@ class PublishInitialPose(Node):
 
     def publish_pose(self, x, y, z, roll, pitch, yaw):
         quat = tf_transformations.quaternion_from_euler(roll, pitch, yaw)
-        xyz = [x, y, z]
 
         initial_pose = PoseWithCovarianceStamped()
-        initial_pose.pose.pose = Pose(Point(*xyz), Quaternion(*quat))
+        
+        # ROS 2 requires keyword arguments for message instantiation
+        p = Point(x=x, y=y, z=z)
+        q = Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3])
+        
+        initial_pose.pose.pose = Pose(position=p, orientation=q)
         initial_pose.header.stamp = self.get_clock().now().to_msg()
         initial_pose.header.frame_id = "map"
+        
         self.pub_pose.publish(initial_pose)
 
-        self.get_logger().info(f"Initial Pose: {x} {y} {z} {yaw} {pitch} {roll}")
+        self.get_logger().info(f"Initial Pose: x={x} y={y} z={z} yaw={yaw} pitch={pitch} roll={roll}")
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = PublishInitialPose()
+
+    # Safely strip ROS 2 arguments out so argparse doesn't crash
+    clean_args = rclpy.utilities.remove_ros_args(sys.argv)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("x", type=float)
@@ -36,9 +45,14 @@ def main(args=None):
     parser.add_argument("yaw", type=float)
     parser.add_argument("pitch", type=float)
     parser.add_argument("roll", type=float)
-    args = parser.parse_args()
+    
+    parsed_args = parser.parse_args(clean_args[1:])
 
-    node.publish_pose(args.x, args.y, args.z, args.roll, args.pitch, args.yaw)
+    node.publish_pose(
+        parsed_args.x, parsed_args.y, parsed_args.z, 
+        parsed_args.roll, parsed_args.pitch, parsed_args.yaw
+    )
+    
     rclpy.shutdown()
 
 

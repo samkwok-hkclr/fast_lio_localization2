@@ -10,7 +10,8 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseWithCovarianceStamped, Pose, Point, Quaternion
 from nav_msgs.msg import Odometry
 # from rclpy.wait_for_message import wait_for_message
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, PointField
+
 from std_msgs.msg import Header
 import numpy as np
 import tf2_ros
@@ -30,8 +31,8 @@ class FastLIOLocalization(Node):
         self.declare_parameters(
             namespace="",
             parameters=[
-                ("map_voxel_size", 0.4),
-                ("scan_voxel_size", 0.1),
+                ("map_voxel_size", 0.1),
+                ("scan_voxel_size", 0.05),
                 ("freq_localization", 0.5),
                 ("freq_global_map", 0.25),
                 ("localization_threshold", 0.8),
@@ -58,7 +59,8 @@ class FastLIOLocalization(Node):
         self.get_logger().info("Global map received.")
         
         self.create_subscription(PointCloud2, "/cloud_registered", self.cb_save_cur_scan, 10)
-        self.create_subscription(Odometry, "/Odometry", self.cb_save_cur_odom, 10)
+        # self.create_subscription(PointCloud2, "/livox/lidar", self.cb_save_cur_scan, 10)
+        self.create_subscription(Odometry, "/odometry", self.cb_save_cur_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self.cb_initialize_pose, 10)
 
         self.timer_localisation = self.create_timer(1.0 / self.get_parameter("freq_localization").value, self.localisation_timer_callback)
@@ -102,23 +104,60 @@ class FastLIOLocalization(Node):
         return trans_inverse
 
     def publish_point_cloud(self, publisher, header, pc):
-        data = dict()
-        data["xyz"] = pc[:, :3]
+        # data = dict()
+        # data["xyz"] = pc[:, :3]
         
-        if pc.shape[1] == 4:
-            data["intensity"] = pc[:, 3]
+        # if pc.shape[1] == 4:
+        #     data["intensity"] = pc[:, 3]
+        # # else:
+        #     # data["rgb"] = np.ones_like(pc)
+        # msg = ros2_numpy.msgify(PointCloud2, data)
+        # msg.header = header
+        # if len(msg.fields) == 4:
+        #     msg.point_step = 16
         # else:
-            # data["rgb"] = np.ones_like(pc)
-        msg = ros2_numpy.msgify(PointCloud2, data)
-        msg.header = header
-        if len(msg.fields) == 4:
-            msg.point_step = 16
-        else:
-            msg.point_step = 12
+        #     msg.point_step = 12
             
-        publisher.publish(msg)
+        # publisher.publish(msg)
         
+        msg = PointCloud2()
+        msg.header = header
+        msg.height = 1
+        msg.width = pc.shape[0]
+        
+        has_intensity = pc.shape[1] >= 4
+        
+        if has_intensity:
+            msg.fields = [
+                PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+                PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+                PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+                PointField(name='intensity', offset=12, datatype=PointField.FLOAT32, count=1),
+            ]
+            msg.point_step = 16
+            points_to_bytes = pc[:, :4].astype(np.float32)
+        else:
+            msg.fields = [
+                PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+                PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+                PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+            ]
+            msg.point_step = 12
+            points_to_bytes = pc[:, :3].astype(np.float32)
+
+        msg.is_bigendian = False
+        msg.row_step = msg.point_step * msg.width
+        msg.is_dense = True
+        
+        # ascontiguousarray ensures memory is packed correctly before converting to bytes
+        msg.data = np.ascontiguousarray(points_to_bytes).tobytes()
+        
+        publisher.publish(msg)
+
     def crop_global_map_in_FOV(self, pose_estimation):
+        if self.cur_odom is None:
+            return
+        
         T_odom_to_base_link = self.pose_to_mat(self.cur_odom.pose.pose)
         T_map_to_base_link = np.matmul(pose_estimation, T_odom_to_base_link)
         T_base_link_to_map = self.inverse_se3(T_map_to_base_link)
@@ -163,7 +202,9 @@ class FastLIOLocalization(Node):
 
     def voxel_down_sample(self, pcd, voxel_size):
         # print(pcd)
-        
+        if pcd is None:
+            self.get_logger().warn(f"The pcd is None")
+            return
         try:
             pcd_down = pcd.voxel_down_sample(voxel_size)
         
@@ -197,6 +238,8 @@ class FastLIOLocalization(Node):
         
         if self.cur_scan is not None:
             self.global_localization(initial_pose)
+        else:
+            self.get_logger().warn("self.cur_scan is None")
             
     def publish_odom(self, transform):
         odom_msg = Odometry()

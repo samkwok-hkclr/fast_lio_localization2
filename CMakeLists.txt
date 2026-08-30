@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(fast_lio_localization)
+project(fast_lio_localization2)
 
 # Set default build type to Release
 if(NOT CMAKE_BUILD_TYPE)
@@ -62,8 +62,16 @@ find_package(std_srvs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
-find_package(livox_ros_driver2 REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_eigen REQUIRED)
+# find_package(livox_ros_driver2 REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+
+find_package(PCL REQUIRED COMPONENTS common io filters registration kdtree)
+include_directories(${PCL_INCLUDE_DIRS})
+link_directories(${PCL_LIBRARY_DIRS})
+add_definitions(${PCL_DEFINITIONS})
 
 set(dependencies
   rclcpp
@@ -77,7 +85,7 @@ set(dependencies
   visualization_msgs
   pcl_ros
   pcl_conversions
-  livox_ros_driver2
+#  livox_ros_driver2
 )
 
 # Thirdparty libraries
@@ -105,6 +113,46 @@ target_include_directories(fastlio_mapping PUBLIC
 target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} Eigen3::Eigen)
 target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 
+add_library(fast_lio_localization_comp SHARED src/fast_lio_localization.cpp)
+target_include_directories(fast_lio_localization_comp PRIVATE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_compile_features(fast_lio_localization_comp PUBLIC cxx_std_17)
+ament_target_dependencies(fast_lio_localization_comp 
+  rclcpp 
+  rclcpp_components 
+  sensor_msgs 
+  nav_msgs 
+  geometry_msgs 
+  tf2 
+  tf2_geometry_msgs 
+  tf2_eigen 
+  pcl_conversions
+)
+target_link_libraries(fast_lio_localization_comp ${PCL_LIBRARIES})
+
+rclcpp_components_register_node(fast_lio_localization_comp
+  PLUGIN "fast_lio_localization::FastLIOLocalization"
+  EXECUTABLE fast_lio_localization_node
+)
+
+add_library(transform_fusion_comp SHARED src/transform_fusion.cpp)
+target_include_directories(transform_fusion_comp PRIVATE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_compile_features(transform_fusion_comp PUBLIC cxx_std_17)
+ament_target_dependencies(transform_fusion_comp 
+  rclcpp 
+  rclcpp_components 
+  nav_msgs 
+  geometry_msgs 
+  tf2 
+  tf2_geometry_msgs 
+  tf2_ros
+)
+
+# Register the Transform Fusion component
+rclcpp_components_register_node(transform_fusion_comp
+  PLUGIN "fast_lio_localization::TransformFusion"
+  EXECUTABLE transform_fusion_node
+)
+
 list(APPEND EOL_LIST "foxy" "galactic" "eloquent" "dashing" "crystal")
 
 if($ENV{ROS_DISTRO} IN_LIST EOL_LIST)
@@ -125,18 +173,30 @@ install(TARGETS fastlio_mapping
 )
 
 install(
-  DIRECTORY config launch rviz
+  DIRECTORY 
+  config 
+  launch 
+  map
+  rviz
   DESTINATION share/${PROJECT_NAME}
+)
+
+install(TARGETS 
+  fast_lio_localization_comp
+  transform_fusion_comp
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
 )
 
 # ament_python_install_package(${PROJECT_NAME})
 
 # Install Python scripts
 install(PROGRAMS
-  fast_lio_localization/global_localization.py
-  fast_lio_localization/publish_initial_pose.py
-  fast_lio_localization/transform_fusion.py
-  fast_lio_localization/invert_livox_scan.py
+  fast_lio_localization2/global_localization.py
+  fast_lio_localization2/publish_initial_pose.py
+  fast_lio_localization2/transform_fusion.py
+  fast_lio_localization2/invert_livox_scan.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

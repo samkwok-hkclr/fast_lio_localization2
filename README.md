@@ -1,4 +1,4 @@
-# FAST-LIO-LOCALIZATION2
+# fast_lio_localization2
 
 A simple localization framework that can re-localize in built maps based on [FAST-LIO-ROS2](https://github.com/Ericsii/FAST_LIO_ROS2). 
 
@@ -35,7 +35,7 @@ This part of dependency is consistent with FAST-LIO-ROS2, please refer to the do
 
 - tf_transformations
 ```shell
-pip install tf_transformations
+sudo apt install ros-$ROS_DISTRO-tf-transformations
 ```
 
 - ros2_numpy
@@ -68,7 +68,7 @@ Clone the repository and colcon build:
 
 ```
     cd ~/$A_ROS_DIR$/src
-    git clone https://github.com/Smart-Wheelchair-RRC/FAST_LIO_LOCALIZATION2.git
+    git clone https://github.com/samkwok-hkclr/fast_lio_localization2
     cd FAST_LIO_LOCALIZATION2
     git submodule update --init
     cd ../..
@@ -87,20 +87,9 @@ Clone the repository and colcon build:
 1. Run localization, here we take Livox Mid360 as an example:
 
 ```shell
-ros2 launch fast_lio_localization localization.launch.py pcd_map_topic:=cloud_pcd map:=/path/to/your/map.pcd
+ros2 launch fast_lio_localization localization.launch.py
 ```
-
-Please modify `/path/to/your/map.pcd` to your own map point cloud file path (downsample it for fast rviz2 visualisation, we noticed a performance issue with dense pointclouds).
-
 Wait for 3~5 seconds until the map cloud shows up in RVIZ;
-
-Or if you are running realtime
-
-```shell
-roslaunch livox_ros_driver livox_lidar_msg.launch
-```
-Please set the **publish_freq** in **livox_lidar_rviz.launch** to **10Hz**, to ensure there are enough points for global localization in a single scan. 
-Support for higher frequency is coming soon.
 
 2. Provide initial pose
 Use Rviz2 to provide an initial pose by using the '2D Pose Estimate' Tool in RVIZ2.

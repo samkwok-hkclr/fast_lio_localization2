@@ -2,7 +2,7 @@ from setuptools import setup
 import os
 import glob
 
-package_name = "fast_lio_localization"
+package_name = "fast_lio_localization2"
 
 setup(
     name=package_name,
@@ -15,10 +15,10 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "global_localization = fast_lio_localization.global_localization:main",
-            "publish_initial_pose = fast_lio_localization.publish_initial_pose:main",
-            "transform_fusion = fast_lio_localization.transform_fusion:main",
-            "invert_livox_scan = fast_lio_localization.invert_livox_scan:main",
+            "global_localization = fast_lio_localization2.global_localization:main",
+            "publish_initial_pose = fast_lio_localization2.publish_initial_pose:main",
+            "transform_fusion = fast_lio_localization2.transform_fusion:main",
+            "invert_livox_scan = fast_lio_localization2.invert_livox_scan:main",
         ],
     },
     data_files=[
