@@ -1,17 +1,31 @@
 # --- Global Localization Parameters ---
 global_localization:
   ros__parameters:
-    map_voxel_size: 0.4
-    scan_voxel_size: 0.2
-    freq_localization: 0.25
+    map_voxel_size: 0.25
+    scan_voxel_size: 0.1
+    freq_localization: 0.2
     localization_threshold: 0.8
     fov: 6.28319
     fov_far: 50.0
     max_jump_distance: 1.5       # Maximum allowable position jump in meters
-    pcd_map_path: ""
+    odom_topic: /odometry/fast_lio
+
+transform_fusion:
+  ros__parameters:
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    lidar_frame_id: livox_frame
+    camera_init_frame_id: camera_init
+    body_frame_id: body
+    odom_topic: /odometry/fast_lio
+
+map_publisher:
+  ros__parameters:
+    tf_frame: map
+    interval: 30.0 # seconds
 
 # --- FAST-LIO Mapping Parameters ---
-/**:
+fast_lio_mapping:
   ros__parameters:
     feature_extract_enable: false
     point_filter_num: 3
@@ -52,7 +66,7 @@ global_localization:
       path_en: true                # true: publish Path
       effect_map_en: false         # true: publish Effects
       map_en: true                 # true: publish Map cloud
-      scan_publish_en:  true       # false: close all the point cloud output
+      scan_publish_en: true       # false: close all the point cloud output
       dense_publish_en: false      # false: low down the points number in a global-frame point clouds scan.
       scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
 

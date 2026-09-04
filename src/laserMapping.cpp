@@ -32,6 +32,7 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
+
 #include <omp.h>
 #include <mutex>
 #include <math.h>
@@ -41,27 +42,40 @@
 #include <chrono>
 #include <unistd.h>
 #include <Python.h>
-#include <so3_math.h>
+
 #include <rclcpp/rclcpp.hpp>
-#include <Eigen/Core>
-#include "IMU_Processing.hpp"
+#include <rclcpp_components/register_node_macro.hpp>
+#include <rclcpp_lifecycle/lifecycle_publisher.hpp>
+#include <lifecycle_msgs/msg/state.hpp>
+
+#include <nav2_util/lifecycle_node.hpp>
+
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <visualization_msgs/msg/marker.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/vector3.hpp>
+
+#include <std_srvs/srv/trigger.hpp>
+
+#include <Eigen/Core>
+#include <tf2_ros/transform_broadcaster.h>
+
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
-#include <sensor_msgs/msg/point_cloud2.hpp>
-#include <sensor_msgs/msg/imu.hpp>
-#include <std_srvs/srv/trigger.hpp>
-#include <tf2_ros/transform_broadcaster.h>
-#include <geometry_msgs/msg/transform_stamped.hpp>
-#include <geometry_msgs/msg/vector3.hpp>
+
 // #include <livox_ros_driver2/msg/custom_msg.hpp>
+
+#include "ikd-Tree/ikd_Tree.h"
+#include "so3_math.h"
+
+#include "IMU_Processing.hpp"
 #include "preprocess.h"
-#include <ikd-Tree/ikd_Tree.h>
 
 #define INIT_TIME (0.1)
 #define LASER_POINT_COV (0.001)
@@ -150,21 +164,21 @@ void SigHandle(int sig)
     rclcpp::shutdown();
 }
 
-inline void dump_lio_state_to_log(FILE *fp)
-{
-    V3D rot_ang(Log(state_point.rot.toRotationMatrix()));
-    fprintf(fp, "%lf ", Measures.lidar_beg_time - first_lidar_time);
-    fprintf(fp, "%lf %lf %lf ", rot_ang(0), rot_ang(1), rot_ang(2));                            // Angle
-    fprintf(fp, "%lf %lf %lf ", state_point.pos(0), state_point.pos(1), state_point.pos(2));    // Pos
-    fprintf(fp, "%lf %lf %lf ", 0.0, 0.0, 0.0);                                                 // omega
-    fprintf(fp, "%lf %lf %lf ", state_point.vel(0), state_point.vel(1), state_point.vel(2));    // Vel
-    fprintf(fp, "%lf %lf %lf ", 0.0, 0.0, 0.0);                                                 // Acc
-    fprintf(fp, "%lf %lf %lf ", state_point.bg(0), state_point.bg(1), state_point.bg(2));       // Bias_g
-    fprintf(fp, "%lf %lf %lf ", state_point.ba(0), state_point.ba(1), state_point.ba(2));       // Bias_a
-    fprintf(fp, "%lf %lf %lf ", state_point.grav[0], state_point.grav[1], state_point.grav[2]); // Bias_a
-    fprintf(fp, "\r\n");
-    fflush(fp);
-}
+// inline void dump_lio_state_to_log(FILE *fp)
+// {
+//     V3D rot_ang(Log(state_point.rot.toRotationMatrix()));
+//     fprintf(fp, "%lf ", Measures.lidar_beg_time - first_lidar_time);
+//     fprintf(fp, "%lf %lf %lf ", rot_ang(0), rot_ang(1), rot_ang(2));                            // Angle
+//     fprintf(fp, "%lf %lf %lf ", state_point.pos(0), state_point.pos(1), state_point.pos(2));    // Pos
+//     fprintf(fp, "%lf %lf %lf ", 0.0, 0.0, 0.0);                                                 // omega
+//     fprintf(fp, "%lf %lf %lf ", state_point.vel(0), state_point.vel(1), state_point.vel(2));    // Vel
+//     fprintf(fp, "%lf %lf %lf ", 0.0, 0.0, 0.0);                                                 // Acc
+//     fprintf(fp, "%lf %lf %lf ", state_point.bg(0), state_point.bg(1), state_point.bg(2));       // Bias_g
+//     fprintf(fp, "%lf %lf %lf ", state_point.ba(0), state_point.ba(1), state_point.ba(2));       // Bias_a
+//     fprintf(fp, "%lf %lf %lf ", state_point.grav[0], state_point.grav[1], state_point.grav[2]); // Bias_a
+//     fprintf(fp, "\r\n");
+//     fflush(fp);
+// }
 
 void pointBodyToWorld_ikfom(PointType const *const pi, PointType *const po, state_ikfom &s)
 {
@@ -731,11 +745,16 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     solve_time += omp_get_wtime() - solve_start_;
 }
 
-class LaserMappingNode : public rclcpp::Node
+namespace fast_lio_mapping
+{
+
+class LaserMapping : public nav2_util::LifecycleNode
 {
 public:
-    LaserMappingNode(const rclcpp::NodeOptions &options = rclcpp::NodeOptions()) : Node("laser_mapping", options)
+    explicit LaserMapping(const rclcpp::NodeOptions &options = rclcpp::NodeOptions()) 
+    : nav2_util::LifecycleNode("laser_mapping", "", options)
     {
+        // Declare parameters in constructor
         // this->declare_parameter<bool>("publish.path_en", true);
         this->declare_parameter<bool>("publish.effect_map_en", false);
         this->declare_parameter<bool>("publish.map_en", false);
@@ -769,6 +788,24 @@ public:
         this->declare_parameter<bool>("pcd_save.pcd_save_en", false);
         this->declare_parameter<vector<double>>("mapping.extrinsic_T", vector<double>());
         this->declare_parameter<vector<double>>("mapping.extrinsic_R", vector<double>());
+
+        RCLCPP_INFO(this->get_logger(), "LaserMapping node constructed. (Unconfigured State)");
+    }
+
+    ~LaserMapping()
+    {
+        // fout_out.close();
+        // fout_pre.close();
+        // fclose(fp);
+    }
+
+    // --- Lifecycle Callbacks ---
+
+    nav2_util::CallbackReturn on_configure(const rclcpp_lifecycle::State & /*state*/) override
+    {
+        RCLCPP_INFO(this->get_logger(), "Configuring node...");
+
+        // Get Parameters
         // this->get_parameter_or<bool>("publish.path_en", path_en, true);
         this->get_parameter_or<bool>("publish.effect_map_en", effect_pub_en, false);
         this->get_parameter_or<bool>("publish.map_en", map_pub_en, false);
@@ -810,9 +847,10 @@ public:
         path.header.frame_id = "camera_init";
 
         /*** variables definition ***/
-        int effect_feat_num = 0, frame_num = 0;
-        double deltaT, deltaR, aver_time_consu = 0, aver_time_icp = 0, aver_time_match = 0, aver_time_incre = 0, aver_time_solve = 0, aver_time_const_H_time = 0;
-        bool flg_EKF_converged, EKF_stop_flg = 0;
+        effect_feat_num = 0; 
+        frame_num = 0;
+        aver_time_consu = 0; aver_time_icp = 0; aver_time_match = 0; aver_time_incre = 0; aver_time_solve = 0; aver_time_const_H_time = 0;
+        EKF_stop_flg = 0;
 
         FOV_DEG = (fov_deg + 10.0) > 179.9 ? 179.9 : (fov_deg + 10.0);
         HALF_FOV_COS = cos((FOV_DEG) * 0.5 * PI_M / 180.0);
@@ -834,23 +872,8 @@ public:
         p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));
         p_imu->set_acc_bias_cov(V3D(b_acc_cov, b_acc_cov, b_acc_cov));
 
-        double epsi[23] = {0.001};
         fill(epsi, epsi + 23, 0.001);
         kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
-
-        /*** debug record ***/
-        // FILE *fp;
-        string pos_log_dir = root_dir + "/Log/pos_log.txt";
-        fp = fopen(pos_log_dir.c_str(), "w");
-
-        // ofstream fout_pre, fout_out, fout_dbg;
-        fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"), ios::out);
-        fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), ios::out);
-        fout_dbg.open(DEBUG_FILE_DIR("dbg.txt"), ios::out);
-        if (fout_pre && fout_out)
-            cout << "~~~~" << ROOT_DIR << " file opened" << endl;
-        else
-            cout << "~~~~" << ROOT_DIR << " doesn't exist" << endl;
 
         /*** ROS subscribe initialization ***/
         if (p_pre->lidar_type == AVIA)
@@ -862,31 +885,97 @@ public:
             sub_pcl_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, 20000, standard_pcl_cbk);
         }
         sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 10, imu_cbk);
+
         pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
         pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
-        pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/odometry", 20);
+        pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/odometry/fast_lio", 50);
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
+        
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
         //------------------------------------------------------------------------------------------------------
         auto period_ms = std::chrono::milliseconds(static_cast<int64_t>(5000.0 / 100.0));
-        timer_ = rclcpp::create_timer(this, this->get_clock(), period_ms, std::bind(&LaserMappingNode::timer_callback, this));
+        timer_ = this->create_wall_timer(period_ms, std::bind(&LaserMapping::timer_callback, this));
 
-        RCLCPP_INFO(this->get_logger(), "Node init finished.");
+        RCLCPP_INFO(this->get_logger(), "Node configured successfully.");
+        return nav2_util::CallbackReturn::SUCCESS;
     }
 
-    ~LaserMappingNode()
+    nav2_util::CallbackReturn on_activate(const rclcpp_lifecycle::State & /*state*/) override
     {
-        fout_out.close();
-        fout_pre.close();
-        fclose(fp);
+        RCLCPP_INFO(this->get_logger(), "Activating node...");
+
+        // Lifecycle publishers must be activated to actually send messages
+        pubLaserCloudFull_->on_activate();
+        pubLaserCloudFull_body_->on_activate();
+        pubLaserCloudEffect_->on_activate();
+        pubLaserCloudMap_->on_activate();
+        pubOdomAftMapped_->on_activate();
+        pubPath_->on_activate();
+
+        createBond();
+
+        return nav2_util::CallbackReturn::SUCCESS;
+    }
+
+    nav2_util::CallbackReturn on_deactivate(const rclcpp_lifecycle::State & /*state*/) override
+    {
+        RCLCPP_INFO(this->get_logger(), "Deactivating node...");
+
+        pubLaserCloudFull_->on_deactivate();
+        pubLaserCloudFull_body_->on_deactivate();
+        pubLaserCloudEffect_->on_deactivate();
+        pubLaserCloudMap_->on_deactivate();
+        pubOdomAftMapped_->on_deactivate();
+        pubPath_->on_deactivate();
+        
+        destroyBond();
+
+        return nav2_util::CallbackReturn::SUCCESS;
+    }
+
+    nav2_util::CallbackReturn on_cleanup(const rclcpp_lifecycle::State & /*state*/) override
+    {
+        RCLCPP_INFO(this->get_logger(), "Cleaning up node...");
+
+        // Release resources
+        pubLaserCloudFull_.reset();
+        pubLaserCloudFull_body_.reset();
+        pubLaserCloudEffect_.reset();
+        pubLaserCloudMap_.reset();
+        pubOdomAftMapped_.reset();
+        pubPath_.reset();
+
+        sub_imu_.reset();
+        sub_pcl_pc_.reset();
+        
+        tf_broadcaster_.reset();
+        timer_.reset();
+
+        return nav2_util::CallbackReturn::SUCCESS;
+    }
+
+    nav2_util::CallbackReturn on_shutdown(const rclcpp_lifecycle::State & /*state*/) override
+    {
+        RCLCPP_INFO(this->get_logger(), "Shutting down node...");
+        return nav2_util::CallbackReturn::SUCCESS;
     }
 
 private:
+    bool is_active()
+    {
+        return this->get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE;
+    }
+
     void timer_callback()
     {
+        if (!is_active())
+        {
+            return;
+        }
+
         if (sync_packages(Measures))
         {
             if (flg_reset)
@@ -913,7 +1002,7 @@ private:
 
             if (feats_undistort->empty() || (feats_undistort == NULL))
             {
-                RCLCPP_WARN(this->get_logger(), "No point, skip this scan!\n");
+                RCLCPP_WARN(this->get_logger(), "No point, skip this scan!");
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
                 // cout<<"FAST-LIO not ready"<<endl;
@@ -961,8 +1050,8 @@ private:
             feats_down_world->resize(feats_down_size);
 
             V3D ext_euler = SO3ToEuler(state_point.offset_R_L_I);
-            fout_pre << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose() << " " << ext_euler.transpose() << " " << state_point.offset_T_L_I.transpose() << " " << state_point.vel.transpose()
-                     << " " << state_point.bg.transpose() << " " << state_point.ba.transpose() << " " << state_point.grav << endl;
+            // fout_pre << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose() << " " << ext_euler.transpose() << " " << state_point.offset_T_L_I.transpose() << " " << state_point.vel.transpose()
+            //          << " " << state_point.bg.transpose() << " " << state_point.ba.transpose() << " " << state_point.grav << endl;
 
             if (0) // If you need to see map point, change to "if(1)"
             {
@@ -1035,30 +1124,32 @@ private:
                 s_plot9[time_log_counter] = aver_time_consu;
                 s_plot10[time_log_counter] = add_point_size;
                 time_log_counter++;
-                printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n", t1 - t0, aver_time_match, aver_time_solve, t3 - t1, t5 - t3, aver_time_consu, aver_time_icp, aver_time_const_H_time);
+                // printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n", t1 - t0, aver_time_match, aver_time_solve, t3 - t1, t5 - t3, aver_time_consu, aver_time_icp, aver_time_const_H_time);
                 ext_euler = SO3ToEuler(state_point.offset_R_L_I);
-                fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose() << " " << ext_euler.transpose() << " " << state_point.offset_T_L_I.transpose() << " " << state_point.vel.transpose()
-                         << " " << state_point.bg.transpose() << " " << state_point.ba.transpose() << " " << state_point.grav << " " << feats_undistort->points.size() << endl;
-                dump_lio_state_to_log(fp);
+                // fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose() << " " << ext_euler.transpose() << " " << state_point.offset_T_L_I.transpose() << " " << state_point.vel.transpose()
+                //          << " " << state_point.bg.transpose() << " " << state_point.ba.transpose() << " " << state_point.grav << " " << feats_undistort->points.size() << endl;
+                // dump_lio_state_to_log(fp);
             }
         }
     }
 
 private:
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body_;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudEffect_;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap_;
-    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
-    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
+    // Change standard publishers to LifecyclePublishers
+    rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_;
+    rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body_;
+    rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudEffect_;
+    rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap_;
+    rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
+    rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
+    
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
     // rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_pcl_livox_;
 
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::TimerBase::SharedPtr map_pub_timer_;
-    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_srv_;
+    // rclcpp::TimerBase::SharedPtr map_pub_timer_;
+    // rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_srv_;
 
     bool effect_pub_en = false, map_pub_en = false;
     int effect_feat_num = 0, frame_num = 0;
@@ -1066,50 +1157,54 @@ private:
     bool flg_EKF_converged, EKF_stop_flg = 0;
     double epsi[23] = {0.001};
 
-    FILE *fp;
-    ofstream fout_pre, fout_out, fout_dbg;
+    // FILE *fp;
+    // ofstream fout_pre, fout_out, fout_dbg;
 };
 
-int main(int argc, char **argv)
-{
-    rclcpp::init(argc, argv);
+} // namespace fast_lio_mapping
 
-    signal(SIGINT, SigHandle);
+RCLCPP_COMPONENTS_REGISTER_NODE(fast_lio_mapping::LaserMapping)
 
-    rclcpp::spin(std::make_shared<LaserMappingNode>());
+// int main(int argc, char **argv)
+// {
+//     rclcpp::init(argc, argv);
 
-    if (rclcpp::ok())
-        rclcpp::shutdown();
-    /**************** save map ****************/
-    /* 1. make sure you have enough memories
-    /* 2. pcd save will largely influence the real-time performences **/
-    if (pcl_wait_save->size() > 0 && pcd_save_en)
-    {
-        string file_name = string("scans.pcd");
-        string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
-        pcl::PCDWriter pcd_writer;
-        cout << "current scan saved to /PCD/" << file_name << endl;
-        pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
-    }
+//     signal(SIGINT, SigHandle);
 
-    if (runtime_pos_log)
-    {
-        vector<double> t, s_vec, s_vec2, s_vec3, s_vec4, s_vec5, s_vec6, s_vec7;
-        FILE *fp2;
-        string log_dir = root_dir + "/Log/fast_lio_time_log.csv";
-        fp2 = fopen(log_dir.c_str(), "w");
-        fprintf(fp2, "time_stamp, total time, scan point size, incremental time, search time, delete size, delete time, tree size st, tree size end, add point size, preprocess time\n");
-        for (int i = 0; i < time_log_counter; i++)
-        {
-            fprintf(fp2, "%0.8f,%0.8f,%d,%0.8f,%0.8f,%d,%0.8f,%d,%d,%d,%0.8f\n", T1[i], s_plot[i], int(s_plot2[i]), s_plot3[i], s_plot4[i], int(s_plot5[i]), s_plot6[i], int(s_plot7[i]), int(s_plot8[i]), int(s_plot10[i]), s_plot11[i]);
-            t.push_back(T1[i]);
-            s_vec.push_back(s_plot9[i]);
-            s_vec2.push_back(s_plot3[i] + s_plot6[i]);
-            s_vec3.push_back(s_plot4[i]);
-            s_vec5.push_back(s_plot[i]);
-        }
-        fclose(fp2);
-    }
+//     rclcpp::spin(std::make_shared<LaserMappingNode>());
 
-    return 0;
-}
+//     if (rclcpp::ok())
+//         rclcpp::shutdown();
+//     /**************** save map ****************/
+//     /* 1. make sure you have enough memories
+//     /* 2. pcd save will largely influence the real-time performences **/
+//     if (pcl_wait_save->size() > 0 && pcd_save_en)
+//     {
+//         string file_name = string("scans.pcd");
+//         string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
+//         pcl::PCDWriter pcd_writer;
+//         cout << "current scan saved to /PCD/" << file_name << endl;
+//         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+//     }
+
+//     if (runtime_pos_log)
+//     {
+//         vector<double> t, s_vec, s_vec2, s_vec3, s_vec4, s_vec5, s_vec6, s_vec7;
+//         FILE *fp2;
+//         string log_dir = root_dir + "/Log/fast_lio_time_log.csv";
+//         fp2 = fopen(log_dir.c_str(), "w");
+//         fprintf(fp2, "time_stamp, total time, scan point size, incremental time, search time, delete size, delete time, tree size st, tree size end, add point size, preprocess time\n");
+//         for (int i = 0; i < time_log_counter; i++)
+//         {
+//             fprintf(fp2, "%0.8f,%0.8f,%d,%0.8f,%0.8f,%d,%0.8f,%d,%d,%d,%0.8f\n", T1[i], s_plot[i], int(s_plot2[i]), s_plot3[i], s_plot4[i], int(s_plot5[i]), s_plot6[i], int(s_plot7[i]), int(s_plot8[i]), int(s_plot10[i]), s_plot11[i]);
+//             t.push_back(T1[i]);
+//             s_vec.push_back(s_plot9[i]);
+//             s_vec2.push_back(s_plot3[i] + s_plot6[i]);
+//             s_vec3.push_back(s_plot4[i]);
+//             s_vec5.push_back(s_plot[i]);
+//         }
+//         fclose(fp2);
+//     }
+
+//     return 0;
+// }

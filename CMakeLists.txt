@@ -6,17 +6,16 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-ADD_COMPILE_OPTIONS(-std=c++14)
-ADD_COMPILE_OPTIONS(-std=c++14)
-set(CMAKE_CXX_FLAGS "-std=c++14 -O3")
+ADD_COMPILE_OPTIONS(-std=c++17)
+set(CMAKE_CXX_FLAGS "-std=c++17 -O3")
 
 add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fexceptions")
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -pthread -std=c++0x -std=c++14 -fexceptions")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -pthread -std=c++0x -std=c++17 -fexceptions")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 message("Current CPU archtecture: ${CMAKE_SYSTEM_PROCESSOR}")
@@ -43,7 +42,7 @@ endif()
 
 find_package(OpenMP QUIET)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}   ${OpenMP_C_FLAGS}")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
 
 find_package(PythonLibs REQUIRED)
 find_path(MATPLOTLIB_CPP_INCLUDE_DIRS "matplotlibcpp.h")
@@ -53,7 +52,9 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
+# find_package(rclcpp_lifecycle REQUIRED)
 find_package(rclpy REQUIRED)
+find_package(lifecycle_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -66,6 +67,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
 # find_package(livox_ros_driver2 REQUIRED)
+find_package(nav2_util REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 find_package(PCL REQUIRED COMPONENTS common io filters registration kdtree)
@@ -102,23 +104,56 @@ set(msg_files
 rosidl_generate_interfaces(${PROJECT_NAME}
   ${msg_files}
 )
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 ament_export_dependencies(rosidl_default_runtime)
 
-add_executable(fastlio_mapping src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
-target_include_directories(fastlio_mapping PUBLIC
+# add_executable(fastlio_mapping src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
+add_library(fast_lio_mapping_comp src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
+target_include_directories(fast_lio_mapping_comp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS}
 )
-target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} Eigen3::Eigen)
-target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
+target_link_libraries(fast_lio_mapping_comp 
+  ${PCL_LIBRARIES} 
+  ${PYTHON_LIBRARIES} 
+  Eigen3::Eigen
+  "${cpp_typesupport_target}"
+)
+target_include_directories(fast_lio_mapping_comp PRIVATE ${PYTHON_INCLUDE_DIRS})
+target_compile_features(fast_lio_mapping_comp PUBLIC cxx_std_17)
+ament_target_dependencies(fast_lio_mapping_comp 
+  rclcpp 
+  rclcpp_components
+  # rclcpp_lifecycle
+  lifecycle_msgs
+  std_srvs 
+  sensor_msgs 
+  nav_msgs 
+  geometry_msgs 
+  visualization_msgs
+  tf2 
+  tf2_geometry_msgs 
+  tf2_eigen 
+  pcl_conversions
+  nav2_util
+)
+
+rclcpp_components_register_node(fast_lio_mapping_comp
+  PLUGIN "fast_lio_mapping::LaserMapping"
+  EXECUTABLE fast_lio_mapping_node
+)
 
 add_library(fast_lio_localization_comp SHARED src/fast_lio_localization.cpp)
-target_include_directories(fast_lio_localization_comp PRIVATE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_include_directories(fast_lio_localization_comp PRIVATE 
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
 target_compile_features(fast_lio_localization_comp PUBLIC cxx_std_17)
 ament_target_dependencies(fast_lio_localization_comp 
   rclcpp 
   rclcpp_components 
+  # rclcpp_lifecycle
+  lifecycle_msgs
   sensor_msgs 
   nav_msgs 
   geometry_msgs 
@@ -126,6 +161,7 @@ ament_target_dependencies(fast_lio_localization_comp
   tf2_geometry_msgs 
   tf2_eigen 
   pcl_conversions
+  nav2_util
 )
 target_link_libraries(fast_lio_localization_comp ${PCL_LIBRARIES})
 
@@ -140,36 +176,20 @@ target_compile_features(transform_fusion_comp PUBLIC cxx_std_17)
 ament_target_dependencies(transform_fusion_comp 
   rclcpp 
   rclcpp_components 
+  # rclcpp_lifecycle
+  lifecycle_msgs
   nav_msgs 
   geometry_msgs 
   tf2 
   tf2_geometry_msgs 
   tf2_ros
+  nav2_util
 )
 
 # Register the Transform Fusion component
 rclcpp_components_register_node(transform_fusion_comp
   PLUGIN "fast_lio_localization::TransformFusion"
   EXECUTABLE transform_fusion_node
-)
-
-list(APPEND EOL_LIST "foxy" "galactic" "eloquent" "dashing" "crystal")
-
-if($ENV{ROS_DISTRO} IN_LIST EOL_LIST)
-  # Custommsg to support foxy & galactic
-  rosidl_target_interfaces(fastlio_mapping
-    ${PROJECT_NAME} "rosidl_typesupport_cpp")
-else()
-  rosidl_get_typesupport_target(cpp_typesupport_target
-    ${PROJECT_NAME} "rosidl_typesupport_cpp")
-  target_link_libraries(fastlio_mapping ${cpp_typesupport_target})
-endif()
-
-ament_target_dependencies(fastlio_mapping ${dependencies})
-
-# ---------------- Install --------------- #
-install(TARGETS fastlio_mapping
-  DESTINATION lib/${PROJECT_NAME}
 )
 
 install(
@@ -182,6 +202,7 @@ install(
 )
 
 install(TARGETS 
+  fast_lio_mapping_comp
   fast_lio_localization_comp
   transform_fusion_comp
   ARCHIVE DESTINATION lib
@@ -193,10 +214,10 @@ install(TARGETS
 
 # Install Python scripts
 install(PROGRAMS
-  fast_lio_localization2/global_localization.py
+  # fast_lio_localization2/global_localization.py
   fast_lio_localization2/publish_initial_pose.py
-  fast_lio_localization2/transform_fusion.py
-  fast_lio_localization2/invert_livox_scan.py
+  # fast_lio_localization2/transform_fusion.py
+  # fast_lio_localization2/invert_livox_scan.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

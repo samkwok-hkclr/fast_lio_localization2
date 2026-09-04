@@ -69,7 +69,7 @@ Clone the repository and colcon build:
 ```
     cd ~/$A_ROS_DIR$/src
     git clone https://github.com/samkwok-hkclr/fast_lio_localization2
-    cd FAST_LIO_LOCALIZATION2
+    cd fast_lio_localization2
     git submodule update --init
     cd ../..
     colcon build --symlink-install
@@ -82,9 +82,9 @@ Clone the repository and colcon build:
 
 ## 4. Run Localization
 
-### 4.2 Run
+### 4.1 Run
 
-1. Run localization, here we take Livox Mid360 as an example:
+1. Run localization
 
 ```shell
 ros2 launch fast_lio_localization localization.launch.py

@@ -64,15 +64,15 @@ def generate_launch_description():
     )
     
     # Load parameters from yaml file
-    fast_lio_node = Node(
-        package="fast_lio_localization2",
-        executable="fastlio_mapping",
-        parameters=[
-            PathJoinSubstitution([config_path, config_file]), 
-            {"use_sim_time": use_sim_time},
-        ],
-        output="screen",
-    )
+    # fast_lio_node = Node(
+    #     package="fast_lio_localization2",
+    #     executable="fastlio_mapping",
+    #     parameters=[
+    #         PathJoinSubstitution([config_path, config_file]), 
+    #         {"use_sim_time": use_sim_time},
+    #     ],
+    #     output="screen",
+    # )
     
     # Global localization and Transform Fusion running in the SAME container
     localization_container = ComposableNodeContainer(
@@ -90,31 +90,53 @@ def generate_launch_description():
                     PathJoinSubstitution([config_path, config_file]), # Load all params from YAML
                     {"pcd_map_path": pcd_map_path}                    # Allow command-line 'map:=' override
                 ],
-                extra_arguments=[{'use_intra_process_comms': True}]
+                extra_arguments=[
+                    {'use_intra_process_comms': True}
+                ],
             ),
             # 2. The Transform Fusion Component
             ComposableNode(
                 package='fast_lio_localization2',
                 plugin='fast_lio_localization::TransformFusion',
                 name='transform_fusion',
-                extra_arguments=[{'use_intra_process_comms': True}]
-            )
+                parameters=[
+                    PathJoinSubstitution([config_path, config_file]), # Load all params from YAML
+                ],
+                extra_arguments=[
+                    {'use_intra_process_comms': True}
+                ],
+            ),
+            # 3. PCD to PointCloud2 publisher
+            ComposableNode(
+                package='pcl_ros',
+                plugin='pcl_ros::PCDPublisher',
+                name='map_publisher',
+                parameters=[
+                    PathJoinSubstitution([config_path, config_file]),
+                    {"file_name": pcd_map_path},
+                ],
+                remappings=[
+                    ("cloud_pcd", pcd_map_topic),
+                ],
+                extra_arguments=[
+                    {'use_intra_process_comms': True}
+                ],
+            ),
+            # 4. Fast LIO Mapping
+            ComposableNode(
+                package="fast_lio_localization2",
+                plugin="fast_lio_mapping::LaserMapping",
+                name="fast_lio_mapping",
+                parameters=[
+                    PathJoinSubstitution([config_path, config_file]), 
+                    {"use_sim_time": use_sim_time},
+                ],
+                extra_arguments=[
+                    {'use_intra_process_comms': True}
+                ],
+            ),
         ],
         output='screen',
-    )
-    
-    # PCD to PointCloud2 publisher
-    pcd_publisher_node = Node(
-        package="pcl_ros",
-        executable="pcd_to_pointcloud",
-        name="map_publisher",
-        output="screen",
-        parameters=[{"file_name": pcd_map_path,
-                     "tf_frame": "map",
-                     "interval": 1.0}], # Updated period_ms_ to interval for ROS 2
-        remappings=[
-            ("cloud_pcd", pcd_map_topic),
-        ]
     )
 
     rviz_node = Node(
@@ -133,9 +155,9 @@ def generate_launch_description():
     ld.add_action(declare_map_path)
     ld.add_action(declare_pcd_map_topic)
 
-    ld.add_action(fast_lio_node)
+    # ld.add_action(fast_lio_node)
     ld.add_action(rviz_node)
     ld.add_action(localization_container)
-    ld.add_action(pcd_publisher_node)
+    # ld.add_action(pcd_publisher_node)
 
     return ld
