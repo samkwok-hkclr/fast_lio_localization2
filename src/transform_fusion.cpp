@@ -66,11 +66,11 @@ public:
     // Subscribers
     sub_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
       odom_topic, 50,
-      std::bind(&TransformFusion::cb_save_cur_odom, this, std::placeholders::_1));
+      std::bind(&TransformFusion::odom_cb, this, std::placeholders::_1));
 
     sub_map_to_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
       "/map_to_odom", 10,
-      std::bind(&TransformFusion::cb_save_map_to_odom, this, std::placeholders::_1));
+      std::bind(&TransformFusion::map_to_odom_cb, this, std::placeholders::_1));
 
     // Timer 50 Hz
     timer_ = this->create_wall_timer(
@@ -138,9 +138,14 @@ public:
     return nav2_util::CallbackReturn::SUCCESS;
   }
 
-  nav2_util::CallbackReturn on_shutdown(const rclcpp_lifecycle::State & /*state*/) override
+  nav2_util::CallbackReturn on_shutdown(const rclcpp_lifecycle::State & state) override
   {
-    RCLCPP_INFO(this->get_logger(), "Shutting down node...");
+    RCLCPP_INFO(get_logger(), "Shutting down from %s", state.label().c_str());
+    if (state.id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+    {
+      on_deactivate(state);
+    }
+    on_cleanup(state);
     return nav2_util::CallbackReturn::SUCCESS;
   }
 
@@ -174,33 +179,35 @@ private:
     return this->get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE;
   }
 
-  void cb_save_cur_odom(const nav_msgs::msg::Odometry::SharedPtr msg)
+  void odom_cb(const nav_msgs::msg::Odometry::SharedPtr msg)
   {
     if (!is_active()) return;
     std::lock_guard<std::mutex> lock(data_mutex_);
     curr_camera_init_body_ = msg;
   }
 
-  void cb_save_map_to_odom(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
+  void map_to_odom_cb(const nav_msgs::msg::Odometry::SharedPtr msg)
   {
     if (!is_active()) return;
     std::lock_guard<std::mutex> lock(data_mutex_);
-    curr_map_to_camera_init_ = std::const_pointer_cast<nav_msgs::msg::Odometry>(msg);
+    curr_map_to_camera_init_ = msg;
   }
 
   void transform_fusion_callback()
   {
-    if (!is_active()) return;
+    if (!is_active()) 
+    return;
     
-    std::lock_guard<std::mutex> lock(data_mutex_);
+    nav_msgs::msg::Odometry::SharedPtr curr_body, curr_map;
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      if (!curr_camera_init_body_ || !curr_map_to_camera_init_) 
+        return;
+      curr_body = curr_camera_init_body_;
+      curr_map  = curr_map_to_camera_init_;
+    }
 
-    if (!curr_camera_init_body_) 
-      return;
-
-    if (!curr_map_to_camera_init_)
-      return;
-
-    auto get_flat_transform = [&] (tf2::Transform g) -> tf2::Transform {
+    auto get_flat_transform = [&] (const tf2::Transform & g) -> tf2::Transform {
       double roll, pitch, yaw;
       tf2::Matrix3x3(g.getRotation()).getRPY(roll, pitch, yaw);
 
@@ -220,10 +227,12 @@ private:
     tf2::Transform g_map_camera_init;
     g_map_camera_init.setIdentity();
 
-    tf2::fromMsg(curr_map_to_camera_init_->pose.pose, g_map_camera_init);
+    const rclcpp::Time now_stamp = this->get_clock()->now();
+
+    tf2::fromMsg(curr_map->pose.pose, g_map_camera_init);
 
     geometry_msgs::msg::TransformStamped tf_map_camera;
-    tf_map_camera.header.stamp    = this->get_clock()->now();
+    tf_map_camera.header.stamp    = now_stamp;
     tf_map_camera.header.frame_id = "map";
     tf_map_camera.child_frame_id  = camera_init_frame_id_;
     tf_map_camera.transform       = tf2::toMsg(g_map_camera_init);
@@ -255,7 +264,7 @@ private:
     tf2::Transform g_map_odom = g_map_camera_init * g_base_lidar.inverse();
 
     geometry_msgs::msg::TransformStamped tf_map_odom;
-    tf_map_odom.header.stamp    = tf_map_camera.header.stamp;
+    tf_map_odom.header.stamp    = now_stamp;
     tf_map_odom.header.frame_id = "map";
     tf_map_odom.child_frame_id  = odom_frame_id_;
     tf_map_odom.transform       = tf2::toMsg(get_flat_transform(g_map_odom));
@@ -266,15 +275,26 @@ private:
     // 4. camera_init -> body  (from FAST-LIO)
     // ============================================================
     tf2::Transform g_camera_init_body;          // actually camera_init -> body
-    tf2::fromMsg(curr_camera_init_body_->pose.pose, g_camera_init_body);
+    tf2::fromMsg(curr_body->pose.pose, g_camera_init_body);
 
     // ============================================================
     // 5. odom -> base_link
     // ============================================================
     tf2::Transform g_odom_base = g_camera_init_body;
+    // adjust by body→base extrinsic
+    // geometry_msgs::msg::TransformStamped tf_body_base;
+    // try {
+    //   tf_body_base = tf_buffer_->lookupTransform(
+    //     base_frame_id_, body_frame_id_, tf2::TimePointZero);
+    // } catch (...) {
+    //   return;
+    // }
+    // tf2::Transform g_body_base;
+    // tf2::fromMsg(tf_body_base.transform, g_body_base);
+    // g_odom_base = g_odom_base * g_body_base;
 
     geometry_msgs::msg::TransformStamped tf_odom_base;
-    tf_odom_base.header.stamp    = curr_camera_init_body_->header.stamp;
+    tf_odom_base.header.stamp    = now_stamp;
     tf_odom_base.header.frame_id = odom_frame_id_;
     tf_odom_base.child_frame_id  = base_frame_id_;
     tf_odom_base.transform       = tf2::toMsg(get_flat_transform(g_odom_base));
@@ -286,11 +306,11 @@ private:
     tf2::Transform g_map_base = g_map_odom * g_odom_base;
 
     nav_msgs::msg::Odometry loc;
-    loc.header.stamp    = curr_camera_init_body_->header.stamp;
+    loc.header.stamp    = now_stamp;
     loc.header.frame_id = "map";
     loc.child_frame_id  = base_frame_id_;
     tf2::toMsg(g_map_base, loc.pose.pose);
-    loc.twist = curr_camera_init_body_->twist;
+    loc.twist = curr_body->twist;
     
     pub_localization_->publish(loc);
   }
