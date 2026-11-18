@@ -502,19 +502,19 @@ private:
 
   void publish_odom(const tf2::Transform& tf)
   {
-    auto msg = std::make_unique<nav_msgs::msg::Odometry>();
-    msg->header.stamp         = now();
-    msg->header.frame_id      = "map";
-    msg->child_frame_id       = "odom";
-    msg->pose.pose.position.x = tf.getOrigin().x();
-    msg->pose.pose.position.y = tf.getOrigin().y();
-    msg->pose.pose.position.z = tf.getOrigin().z();
+    nav_msgs::msg::Odometry msg;
+    msg.header.stamp         = now();
+    msg.header.frame_id      = "map";
+    msg.child_frame_id       = "odom";
+    msg.pose.pose.position.x = tf.getOrigin().x();
+    msg.pose.pose.position.y = tf.getOrigin().y();
+    msg.pose.pose.position.z = tf.getOrigin().z();
     const tf2::Quaternion q = tf.getRotation();
-    msg->pose.pose.orientation.x = q.x();
-    msg->pose.pose.orientation.y = q.y();
-    msg->pose.pose.orientation.z = q.z();
-    msg->pose.pose.orientation.w = q.w();
-    pub_map_to_odom_->publish(std::move(msg));
+    msg.pose.pose.orientation.x = q.x();
+    msg.pose.pose.orientation.y = q.y();
+    msg.pose.pose.orientation.z = q.z();
+    msg.pose.pose.orientation.w = q.w();
+    pub_map_to_odom_->publish(msg);
   }
 };
 
